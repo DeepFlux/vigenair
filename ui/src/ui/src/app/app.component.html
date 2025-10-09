@@ -56,6 +56,7 @@ limitations under the License.
 </div>
 <mat-sidenav-container style="height: calc(100% - 68px)">
   <mat-sidenav-content>
+
     <mat-expansion-panel #videoUploadPanel expanded>
       <mat-expansion-panel-header>
         <mat-panel-title class="panel-title"
@@ -632,6 +633,28 @@ limitations under the License.
       </ng-container>
     </mat-expansion-panel>
 
+    <mat-expansion-panel #CombineVideosPanel [disabled]="!folder">
+      <mat-expansion-panel-header>
+        <mat-panel-title class="panel-title">
+          <mat-icon class="panel-icon">movie_filter</mat-icon>Combined Videos
+        </mat-panel-title>
+      </mat-expansion-panel-header>
+      <mat-spinner *ngIf="combinedvideosLoading" style="margin-bottom: 16px"></mat-spinner>
+      <div *ngIf="!combinedvideosLoading">
+        <mat-list *ngIf="combinedVideos.length > 0; else noVideos">
+          <mat-list-item *ngFor="let video of combinedVideos">
+            <span matListItemTitle>{{ getVideoFileName(video) }}</span>
+            <button mat-icon-button (click)="downloadVideo(video)" matListItemMeta>
+              <mat-icon>download</mat-icon>
+            </button>
+          </mat-list-item>
+        </mat-list>
+        <ng-template #noVideos>
+          <p class="no-data">No combined videos available</p>
+        </ng-template>
+      </div>
+    </mat-expansion-panel>
+
     <mat-expansion-panel #videoCombosPanel [disabled]="!combosJson">
       <mat-expansion-panel-header>
         <mat-panel-title class="panel-title"
@@ -700,6 +723,7 @@ limitations under the License.
         </span>
       </div>
     </mat-expansion-panel>
+
   </mat-sidenav-content>
   <mat-sidenav #renderQueueSidenav position="end" style="width: 35rem">
     <div style="margin-bottom: auto">

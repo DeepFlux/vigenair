@@ -227,4 +227,41 @@ export class ApiCallsService implements ApiCalls {
       }, 1000);
     });
   }
+  getUserAuthToken(): Observable<string> {
+    return new Observable<string>(subscriber => {
+      setTimeout(() => {
+        this.ngZone.run(() => {
+          subscriber.next('mock-auth-token-12345');
+          subscriber.complete();
+        });
+      }, 500);
+    });
+  }
+  combineSegments(gcsFolder: string, segmentIds: string[]): Observable<string> {
+    return new Observable<string>((subscriber) => {
+      setTimeout(() => {
+        this.ngZone.run(() => {
+          subscriber.next(`${gcsFolder}/combined_video.mp4`);
+          subscriber.complete();
+        });
+      }, 1000);
+    });
+  }
+  getGcsFilesPath(gcsFolder: string): Observable<string[]> {
+    return new Observable<string[]>((subscriber) => {
+      setTimeout(() => {
+        this.ngZone.run(() => {
+          const mockFilePaths = [
+            `${gcsFolder}/video_segment_001.mp4`,
+            `${gcsFolder}/video_segment_002.mp4`,
+            `${gcsFolder}/video_segment_003.mp4`,
+            `${gcsFolder}/combined_video_final.mp4`
+          ];
+          
+          subscriber.next(mockFilePaths);
+          subscriber.complete();
+        });
+      }, 1000);
+    });
+  }
 }

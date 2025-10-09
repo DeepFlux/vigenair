@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
+import { MatListModule } from '@angular/material/list';
 import { CdkDrag } from '@angular/cdk/drag-drop';
 import { CommonModule } from '@angular/common';
 import { Component, ElementRef, inject, ViewChild } from '@angular/core';
@@ -115,6 +115,7 @@ export type FramingDialogData = {
     MatDialogModule,
     MatProgressSpinnerModule,
     CdkDrag,
+    MatListModule
   ],
   templateUrl: './app.component.html',
   styleUrl: './app.component.css',
@@ -192,6 +193,9 @@ export class AppComponent {
   businessObjectives = Object.values(CONFIG.vertexAi.abcdBusinessObjectives);
   segmentMarkers: Record<string, SegmentMarker[]> = {};
   segmentSplitting = false;
+  showCombined = false;
+  combinedVideos: string[] = [];
+  combinedvideosLoading = true;
 
   @ViewChild('VideoComboComponent') VideoComboComponent?: VideoComboComponent;
   @ViewChild('previewVideoElem')
@@ -247,6 +251,49 @@ export class AppComponent {
     }
   }
 
+  getCombinedVideos() {
+    this.combinedvideosLoading = true
+    this.apiCallsService
+      .getGcsFilesPath(`${this.folder}/combined_videos/`)
+      .subscribe({
+        next: data => {
+          this.combinedVideos = data || [];
+          console.log('Combined videos:', this.combinedVideos);
+          this.combinedvideosLoading = false;
+        },
+        error: err => this.failHandler(err, this.folder, true),
+      });
+  }
+
+  downloadVideo(filePath: string) {
+    const url = `${CONFIG.cloudStorage.endpointBase}/b/${CONFIG.cloudStorage.bucket}/o/${encodeURIComponent(filePath)}?alt=media`;
+    
+    this.apiCallsService.getUserAuthToken().subscribe({
+      next: token => {
+        fetch(url, {
+          headers: { Authorization: `Bearer ${token}` }
+        })
+        .then(res => res.blob())
+        .then(blob => {
+          const blobUrl = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = blobUrl;
+          a.download = filePath.split('/').pop() || '';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(blobUrl);
+        })
+        .catch(err => console.error('Download failed', err));
+      },
+      error: err => console.error('Auth failed', err)
+    });
+  }
+
+  getVideoFileName(path: string): string {
+    return path.split('/').pop() || 'video';
+  }
+
   handleInputCombosFolder(inputCombosFolder: string) {
     this.videoUploadPanel.close();
     this.getRenderedCombos(inputCombosFolder);
@@ -259,6 +306,7 @@ export class AppComponent {
     this.rendering = false;
     this.loadingVariant = false;
     this.generatingPreviews = false;
+    this.combinedvideosLoading = false
     this.snackBar
       .open('An unexpected error occurred.', 'Start over', {
         horizontalPosition: 'center',
@@ -727,6 +775,7 @@ export class AppComponent {
     this.videoUploadPanel.close();
     this.videoMagicPanel.open();
     this.getSubtitlesTrack();
+    this.getCombinedVideos();
     if (getPreviousRenders) {
       this.getPreviousRenders();
     } else {
@@ -1371,6 +1420,7 @@ export class AppComponent {
       next: result => {
         console.log(result);
         this.getAvSegments();
+        this.loading = false;
       },
       error: () => { this.loading = false; }
     });
