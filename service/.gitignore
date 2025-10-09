@@ -1,3 +1,5 @@
 pylintrc
 .env-*.yaml
 deploy-*.sh
+venv/
+venv

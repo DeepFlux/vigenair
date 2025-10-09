@@ -55,6 +55,10 @@ function getRunsFromGcs() {
   };
 }
 
+function getGcsFilesPath(gcsFolder: string){
+  return StorageManager.listObjects('', gcsFolder);
+}
+
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 function getRendersFromGcs(gcsFolder: string) {
   const combosFolders = StorageManager.listObjects('/', `${gcsFolder}/`).filter(

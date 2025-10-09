@@ -65,7 +65,11 @@ export class StorageManager {
         (e: string) => e.replace(prefix ?? '', '').split('/')[0]
       );
     }
-    return result.items.map((e: GoogleCloud.Storage.Objects) => e.name);
+    if(result.items){
+      return result.items.map((e: GoogleCloud.Storage.Objects) => e.name);
+    }
+    return [];
+    
   }
 
   static uploadFile(
