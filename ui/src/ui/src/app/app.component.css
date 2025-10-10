@@ -274,3 +274,44 @@ mat-divider {
   margin-bottom: 16px;
   justify-content: start;
 }
+
+.video-list-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 8px;
+}
+
+.video-card {
+  transition: all 0.2s ease;
+  cursor: default;
+}
+
+.video-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+}
+
+.video-card-content {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px !important;
+}
+
+.video-icon {
+  flex-shrink: 0;
+}
+
+.video-name {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.download-btn {
+  flex-shrink: 0;
+}

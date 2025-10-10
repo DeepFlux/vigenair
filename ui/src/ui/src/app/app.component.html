@@ -642,12 +642,27 @@ limitations under the License.
       <mat-spinner *ngIf="combinedvideosLoading" style="margin-bottom: 16px"></mat-spinner>
       <div *ngIf="!combinedvideosLoading">
         <mat-list *ngIf="combinedVideos.length > 0; else noVideos">
-          <mat-list-item *ngFor="let video of combinedVideos">
-            <span matListItemTitle>{{ getVideoFileName(video) }}</span>
-            <button mat-icon-button (click)="downloadVideo(video)" matListItemMeta>
-              <mat-icon>download</mat-icon>
-            </button>
-          </mat-list-item>
+          <div class="video-list-container">
+            <mat-card 
+              *ngFor="let video of combinedVideos" 
+              class="video-card mat-elevation-z2">
+              
+              <mat-card-content class="video-card-content">
+                <mat-icon class="video-icon" color="primary">videocam</mat-icon>
+                
+                <span class="video-name">{{ getVideoFileName(video) }}</span>
+                
+                <button 
+                  mat-icon-button 
+                  (click)="downloadVideo(video)"
+                  matTooltip="Download video"
+                  color="primary"
+                  class="download-btn">
+                  <mat-icon>download</mat-icon>
+                </button>
+              </mat-card-content>
+            </mat-card>
+          </div>
         </mat-list>
         <ng-template #noVideos>
           <p class="no-data">No combined videos available</p>
