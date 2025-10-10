@@ -257,13 +257,6 @@ function combineSegments(
   gcsFolder: string,
   segmentIds: string[],
 ): string {
-  
-  // Preserve current state (snapshot current data.json)
-  StorageManager.renameFile(
-    `${gcsFolder}/${CONFIG.cloudStorage.files.data}`,
-    `${gcsFolder}/${CONFIG.cloudStorage.files.presplit}`,
-  );
-
   // Prepare intent payload
   const payload = {
     segment_ids: segmentIds,
