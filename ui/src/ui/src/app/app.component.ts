@@ -775,7 +775,6 @@ export class AppComponent {
     this.videoUploadPanel.close();
     this.videoMagicPanel.open();
     this.getSubtitlesTrack();
-    this.getCombinedVideos();
     if (getPreviousRenders) {
       this.getPreviousRenders();
     } else {
