@@ -425,7 +425,7 @@ export class ApiCallsService implements ApiCalls {
     });
   }
 
-  combineSegments(gcsFolder: string, segmentIds: string[]): Observable<string> {
+  combineSegments(gcsFolder: string, segmentIds: string[][]): Observable<string> {
     return new Observable<string>((subscriber) => {
       // eslint-disable-next-line @typescript-eslint/ban-ts-comment
       // @ts-ignore

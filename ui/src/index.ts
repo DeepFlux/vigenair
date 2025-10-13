@@ -255,12 +255,17 @@ function splitSegment(
 
 function combineSegments(
   gcsFolder: string,
-  segmentIds: string[],
+  segmentIds: string[][],
 ): string {
   // Prepare intent payload
   const payload = {
     segment_ids: segmentIds,
   };
+
+  StorageManager.renameFile(
+    `${gcsFolder}/${CONFIG.cloudStorage.files.data}`,
+    `${gcsFolder}/${CONFIG.cloudStorage.files.precombine}`
+  );
 
   const encodedJson = Utilities.base64Encode(
     JSON.stringify(payload),
@@ -269,7 +274,7 @@ function combineSegments(
 
   // Write timestamped combine marker (e.g., 1696320000000_combine.json)
   const combineFileName =
-    `${Date.now()}${CONFIG.cloudStorage.files.combine}`;
+    `${Date.now()}${CONFIG.cloudStorage.files.combine_segments}`;
   StorageManager.uploadFile(
     encodedJson,
     gcsFolder,

@@ -71,7 +71,7 @@ export class SegmentsListComponent {
 
   @Output() seekToSegmentEvent = new EventEmitter<string>();
   @Output() segmentSplitEvent = new EventEmitter<SegmentMarker[]>();
-  @Output() segmentCombineEvent = new EventEmitter<string[]>();
+  @Output() segmentCombineEvent = new EventEmitter<string[][]>();
 
   @ViewChildren('segmentVideoElem')
   segmentVideoElems?: QueryList<ElementRef<HTMLVideoElement>>;
@@ -236,25 +236,94 @@ export class SegmentsListComponent {
   }
 
   toggleCombineSelection(av_segment_id: string) {
-    console.log('here')
     if (this.selectedForCombine.has(av_segment_id)) {
       this.selectedForCombine.delete(av_segment_id);
     } else {
       this.selectedForCombine.add(av_segment_id);
     }
-
     console.log(this.selectedForCombine);
   }
 
-  combineSegments() {
-    if (this.selectedForCombine.size < 2) {
-      return;
-    }
-    const ordered = this.segmentList!
+  getConsecutiveGroups(): string[][] {
+    if (this.selectedForCombine.size === 0 || !this.segmentList) return [];
+  
+  // Get selected IDs in the order they appear in segmentList
+    const orderedSelected = this.segmentList
       .map((s: AvSegment) => s.av_segment_id)
       .filter(id => this.selectedForCombine.has(id));
-    this.segmentCombineEvent.emit(ordered);
-    // this.combining = true;
+    
+      if (orderedSelected.length < 2) return [];
+      
+      const groups: string[][] = [];
+      let currentGroup: string[] = [orderedSelected[0]];
+      
+      // Get indices in original segmentList for consecutive check
+      const getIndex = (id: string) => 
+        this.segmentList!.findIndex((s: AvSegment) => s.av_segment_id === id);
+
+    for (let i = 1; i < orderedSelected.length; i++) {
+      const prevIndex = getIndex(orderedSelected[i - 1]);
+      const currentIndex = getIndex(orderedSelected[i]);
+      
+      if (currentIndex === prevIndex + 1) {
+        // Consecutive segments
+        currentGroup.push(orderedSelected[i]);
+      } else {
+        // Not consecutive
+        if (currentGroup.length >= 2) {
+          groups.push(currentGroup);
+        }
+        currentGroup = [orderedSelected[i]];
+      }
+    }
+    
+    // Add the last group if it has at least 2 segments
+    if (currentGroup.length >= 2) {
+      groups.push(currentGroup);
+    }
+    
+    return groups;
+  }
+
+  // Format groups for display
+  getCombineText(): string {
+    const groups = this.getConsecutiveGroups();
+    
+    if (groups.length === 0) {
+      return `Combine Segments (${this.selectedForCombine.size})`;
+    }
+
+    const groupTexts = groups.map(group => {
+      if (group.length === 2) {
+        return `${group[0]},${group[1]}`;
+      }
+      return `${group[0]}-${group[group.length - 1]}`;
+    });
+
+    return `Combine ${groupTexts.join(' & ')}`;
+  }
+
+  // Get tooltip text
+  getTooltipText(): string {
+    const groups = this.getConsecutiveGroups();
+    if (groups.length === 0) {
+      if (this.selectedForCombine.size === 0) {
+        return 'Select atleast 2 segments to combine';
+      }
+      return 'Select consecutive segments to combine';
+    }
+    return `Will combine ${groups.length} group${groups.length > 1 ? 's' : ''}`;
+  }
+
+  combineSegments() {
+    const groups = this.getConsecutiveGroups();
+    
+    if (groups.length === 0) {
+      return;
+    }
+    
+    console.log('Emitting groups:', groups);
+    this.segmentCombineEvent.emit(groups);
     this.selectedForCombine.clear();
   }
 }

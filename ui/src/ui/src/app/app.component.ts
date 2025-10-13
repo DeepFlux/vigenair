@@ -1413,7 +1413,7 @@ export class AppComponent {
     });
   }
 
-  onCombineSegments(segmentIds: string[]) {
+  onCombineSegments(segmentIds: string[][]) {
     this.loading = true;
     this.apiCallsService.combineSegments(this.folder!, segmentIds).subscribe({
       next: result => {

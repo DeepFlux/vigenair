@@ -21,10 +21,16 @@ limitations under the License.
 >
   <button
     type="button"
+    mat-raised-button
+    color="primary"
+    class="combine-segments-btn"
     (click)="combineSegments()"
-    [disabled]="selectedForCombine.size === 0"
+    [disabled]="selectedForCombine.size === 0 || selectedForCombine.size === 1"
+    [matTooltip]="getTooltipText()"
+    *ngIf="segmentMode === 'segments'"
   >
-    Combine selected ({{ selectedForCombine.size }})
+    <mat-icon>merge</mat-icon>
+    {{ getCombineText() }}
   </button>
   <div
     cdkDropList
@@ -54,7 +60,7 @@ limitations under the License.
           "
           [style.margin-bottom]="segmentMode !== 'preview' ? '16px' : ''"
         >
-          <button type="button" (click)="toggleCombineSelection(segment.av_segment_id)">
+          <button type="button" (click)="toggleCombineSelection(segment.av_segment_id)" *ngIf="segmentMode === 'segments'">
             {{ selectedForCombine.has(segment.av_segment_id) ? '☑' : '☐' }}
           </button>
           <div
