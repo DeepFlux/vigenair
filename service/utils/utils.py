@@ -205,6 +205,12 @@ class TriggerFile:
               and self.file_ext == 'json'
       )
 
+  def is_extractor_combine_segments_trigger(self) -> bool:
+      """Returns True if the trigger file is a combine segments trigger."""
+      return self.full_gcs_path.endswith(
+          ConfigService.INPUT_COMBINE_SEGMENTS_FILE
+      )
+
   def is_combiner_initial_trigger(self) -> bool:
     return self.file_name_ext == ConfigService.INPUT_RENDERING_FILE
 
