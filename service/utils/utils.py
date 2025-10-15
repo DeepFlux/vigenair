@@ -205,6 +205,10 @@ class TriggerFile:
               and self.file_ext == 'json'
       )
 
+  def is_end_slate_trigger(self) -> bool:
+      """Check if this is an end slate trigger."""
+      return self.file_name_ext.endswith('_end_slate.json')
+
   def is_extractor_combine_segments_trigger(self) -> bool:
       """Returns True if the trigger file is a combine segments trigger."""
       return self.full_gcs_path.endswith(

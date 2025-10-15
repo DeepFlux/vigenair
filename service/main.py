@@ -134,5 +134,13 @@ def gcs_file_uploaded(cloud_event: Dict[str, Any]):
         gcs_bucket_name=bucket, render_file=trigger_file
     )
     combiner_instance.finalise_render()
+  elif trigger_file.is_end_slate_trigger():
+    logging.info('TRIGGER - End slate trigger')
+    end_slate_processor = CombinerService.EndSlateProcessor(
+        gcs_bucket_name=bucket,
+        trigger_file=trigger_file
+    )
+    end_slate_processor.process()
+
 
   logging.info('END - Finished processing uploaded file: %s.', filepath)
