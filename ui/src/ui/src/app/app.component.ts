@@ -1471,8 +1471,6 @@ selectedComboIndex: number | null = null;
     const reader = new FileReader();
     reader.readAsDataURL(this.selectedEndSlateImage);
     reader.onload = () => {
-      
-      console.log('here');
       // Remove the data URL prefix (e.g., "data:image/jpeg;base64,")
       const base64String = (reader.result as string).split(',')[1];
       console.log(base64String);
