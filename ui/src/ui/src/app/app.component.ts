@@ -123,8 +123,8 @@ export type FramingDialogData = {
 })
 export class AppComponent {
   selectedEndSlateImage: File | null = null;
-selectedComboImageUrl: SafeUrl | null = null;
-selectedComboIndex: number | null = null;
+  selectedComboImageUrl: SafeUrl | null = null;
+  selectedComboIndex: number | null = null;
   loading = false;
   generatingVariants = false;
   rendering = false;
@@ -1435,7 +1435,7 @@ selectedComboIndex: number | null = null;
   }
 
   onEndSlateImageSelect(event: Event, comboIndex: number) {
-    const input = event.target as HTMLInputElement;
+  const input = event.target as HTMLInputElement;
     if (input.files && input.files[0]) {
       this.selectedEndSlateImage = input.files[0];
       this.selectedComboIndex = comboIndex;
@@ -1472,7 +1472,6 @@ selectedComboIndex: number | null = null;
     reader.onload = () => {
       // Remove the data URL prefix (e.g., "data:image/jpeg;base64,")
       const base64String = (reader.result as string).split(',')[1];
-      console.log(base64String);
 
       const fileExtension = this.selectedEndSlateImage!.name.split('.').pop() || 'jpg';
       const imageName = `${Date.now()}_${Math.random().toString(36).substring(2, 9)}.${fileExtension}`;
@@ -1511,16 +1510,7 @@ selectedComboIndex: number | null = null;
 
   removeEndSlateImage() {
     this.selectedEndSlateImage = null;
-    
-    if (this.selectedComboImageUrl) {
-      URL.revokeObjectURL(this.selectedComboImageUrl as string);
-      this.selectedComboImageUrl = null;
-    }
-    
+    this.selectedComboImageUrl = null;
     this.selectedComboIndex = null;
-    
-    if (this.selectedEndSlateImage) {
-      this.selectedEndSlateImage = null;
-    }
   }
 }
