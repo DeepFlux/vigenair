@@ -264,4 +264,14 @@ export class ApiCallsService implements ApiCalls {
       }, 1000);
     });
   }
+  addEndSlateImage(gcsFolder: string, payload: object){
+    return new Observable<string>((subscriber) => {
+      setTimeout(() => {
+        this.ngZone.run(() => {
+          subscriber.next(`${gcsFolder}/combined_video.mp4`);
+          subscriber.complete();
+        });
+      }, 1000);
+    });
+  }
 }

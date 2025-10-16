@@ -32,6 +32,7 @@ export const CONFIG = {
       combine_segments: '_combine_segments.json',
       combos: 'combos.json',
       render: 'render.json',
+      endSlate: '_end_slate.json',
       approval: 'approval.json',
       formats: {
         square: 'square.txt',

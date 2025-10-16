@@ -462,5 +462,43 @@ export class ApiCallsService implements ApiCalls {
       .getGcsFilesPath(gcsFolder);
       });
   }
+
+  addEndSlateImage(gcsFolder: string, payload: object){
+    return new Observable<string[]>((subscriber) => {
+      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+      // @ts-ignore
+      google.script.run
+      .withSuccessHandler((response: string[]) => {
+        this.ngZone.run(() => {
+          subscriber.next(response);
+          subscriber.complete();
+        });
+      })
+      .withFailureHandler((error: Error) => {
+        console.error('Encountered an unexpected error while combining segments! Error: ', error);
+        subscriber.error(error);
+      })
+      .addEndSlateImage(gcsFolder, payload);
+      });
+  }
+
+  uploadEndSlateImage(base64EncodedImage: string, gcsFolder: string,  imageName: string,){
+    return new Observable<string[]>((subscriber) => {
+      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+      // @ts-ignore
+      google.script.run
+      .withSuccessHandler((response: string[]) => {
+        this.ngZone.run(() => {
+          subscriber.next(response);
+          subscriber.complete();
+        });
+      })
+      .withFailureHandler((error: Error) => {
+        console.error('Encountered an unexpected error while combining segments! Error: ', error);
+        subscriber.error(error);
+      })
+      .uploadEndSlateImage(base64EncodedImage, gcsFolder, imageName);
+      });
+  }
 }
 

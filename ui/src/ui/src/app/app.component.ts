@@ -74,6 +74,7 @@ import { FileChooserComponent } from './file-chooser/file-chooser.component';
 import { SmartFramingDialog } from './framing-dialog/framing-dialog.component';
 import { SegmentsListComponent } from './segments-list/segments-list.component';
 import { VideoComboComponent } from './video-combo/video-combo.component';
+import { DomSanitizer, SafeUrl } from '@angular/platform-browser';
 
 type ProcessStatus = 'hourglass_top' | 'pending' | 'check_circle';
 
@@ -121,6 +122,9 @@ export type FramingDialogData = {
   styleUrl: './app.component.css',
 })
 export class AppComponent {
+  selectedEndSlateImage: File | null = null;
+selectedComboImageUrl: SafeUrl | null = null;
+selectedComboIndex: number | null = null;
   loading = false;
   generatingVariants = false;
   rendering = false;
@@ -196,6 +200,9 @@ export class AppComponent {
   showCombined = false;
   combinedVideos: string[] = [];
   combinedvideosLoading = true;
+  selectedImageFile: File | null = null;
+  selectedImageUrl: SafeUrl | null = null;
+  selectedVariantIndex: number | null = null;
 
   @ViewChild('VideoComboComponent') VideoComboComponent?: VideoComboComponent;
   @ViewChild('previewVideoElem')
@@ -221,11 +228,13 @@ export class AppComponent {
   @ViewChild('evalPromptPlaceholder')
   evalPromptPlaceholder?: ElementRef<HTMLDivElement>;
   @ViewChild(FileChooserComponent) fileChooserComponent!: FileChooserComponent;
+  @ViewChild('imageInput') imageInput!: ElementRef<HTMLInputElement>;
 
   constructor(
     private apiCallsService: ApiCallsService,
     private snackBar: MatSnackBar,
-    private dialog: MatDialog
+    private dialog: MatDialog,
+    private sanitizer: DomSanitizer,
   ) {
     this.getPreviousRuns();
     this.getWebAppUrl();
@@ -1423,5 +1432,98 @@ export class AppComponent {
       },
       error: () => { this.loading = false; }
     });
+  }
+
+  onEndSlateImageSelect(event: Event, comboIndex: number) {
+    const input = event.target as HTMLInputElement;
+    if (input.files && input.files[0]) {
+      this.selectedEndSlateImage = input.files[0];
+      this.selectedComboIndex = comboIndex;
+      const objectUrl = URL.createObjectURL(this.selectedEndSlateImage);
+      this.selectedComboImageUrl = this.sanitizer.bypassSecurityTrustUrl(objectUrl);
+    }
+  }
+
+  uploadEndSlateImage(comboIndex: number) {
+    if (!this.selectedEndSlateImage || !this.encodedUserId) {
+      alert('Please select an image first');
+      return;
+    }
+
+    const variant = this.combos?.[comboIndex].variants?.horizontal 
+      || this.combos?.[comboIndex].variants?.square 
+      || this.combos?.[comboIndex].variants?.vertical;
+
+    const parts = variant?.entity.split('/') || [];
+    let renderedVideoFolder = '';
+    if (parts.length >= 3) {
+      renderedVideoFolder = parts[parts.length - 2]; // Get "Sample--1707812254000-combos"
+    }
+
+    if (!renderedVideoFolder) {
+      alert('Cannot determine rendered video folder');
+      return;
+    }
+
+    this.loading = true;
+
+    // Convert image file to base64
+    const reader = new FileReader();
+    reader.readAsDataURL(this.selectedEndSlateImage);
+    reader.onload = () => {
+      
+      console.log('here');
+      // Remove the data URL prefix (e.g., "data:image/jpeg;base64,")
+      const base64String = (reader.result as string).split(',')[1];
+      console.log(base64String);
+
+      const fileExtension = this.selectedEndSlateImage!.name.split('.').pop() || 'jpg';
+      const imageName = `${Date.now()}_${Math.random().toString(36).substring(2, 9)}.${fileExtension}`;
+
+      const payload = {
+        image: imageName,
+        duration: "3",
+        rendered_video_folder: renderedVideoFolder,
+      };
+
+      this.apiCallsService.uploadEndSlateImage(
+        base64String,
+        this.folder!,
+        imageName
+      ).subscribe({
+        next: (response) => {
+          this.apiCallsService.addEndSlateImage(this.folder!, payload).subscribe({
+            next: result => {
+              this.loading = false;
+              this.removeEndSlateImage()
+            },
+            error: (err) => {
+              this.loading = false;
+              this.removeEndSlateImage()
+            }
+          });
+        },
+        error: (err) => {
+          this.removeEndSlateImage()
+          this.loading = false;
+        }
+      });
+    };
+    reader.readAsDataURL(this.selectedEndSlateImage!);
+  }
+
+  removeEndSlateImage() {
+    this.selectedEndSlateImage = null;
+    
+    if (this.selectedComboImageUrl) {
+      URL.revokeObjectURL(this.selectedComboImageUrl as string);
+      this.selectedComboImageUrl = null;
+    }
+    
+    this.selectedComboIndex = null;
+    
+    if (this.selectedEndSlateImage) {
+      this.selectedEndSlateImage = null;
+    }
   }
 }

@@ -306,3 +306,45 @@ function doGet(e: GoogleAppsScript.Events.DoGet) {
 function include(filename: string) {
   return HtmlService.createHtmlOutputFromFile(filename).getContent();
 }
+
+function addEndSlateImage(gcsFolder: string, payload: object){
+  const encodedJson = Utilities.base64Encode(
+    JSON.stringify(payload),
+    Utilities.Charset.UTF_8,
+  );
+
+  const endSlateFileName =
+    `${Date.now()}${CONFIG.cloudStorage.files.endSlate}`;
+  StorageManager.uploadFile(
+    encodedJson,
+    gcsFolder,
+    endSlateFileName,
+    'application/json',
+  );
+}
+
+function uploadEndSlateImage(base64EncodedImage: string, gcsFolder: string, imageName: string) {
+  // Determine content type from file extension
+  const extension = imageName.split('.').pop()?.toLowerCase();
+  let contentType = 'image/jpeg'; // default
+  
+  if (extension === 'png') {
+    contentType = 'image/png';
+  } else if (extension === 'gif') {
+    contentType = 'image/gif';
+  } else if (extension === 'webp') {
+    contentType = 'image/webp';
+  } else if (extension === 'jpg' || extension === 'jpeg') {
+    contentType = 'image/jpeg';
+  }
+  
+  StorageManager.uploadFile(
+    base64EncodedImage,
+    gcsFolder,
+    imageName,
+    contentType, 
+  );
+  return [gcsFolder, `${gcsFolder}/${imageName}`];
+}
+
+

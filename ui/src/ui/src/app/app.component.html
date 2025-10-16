@@ -510,9 +510,10 @@ limitations under the License.
           (selectedTabChange)="variantChanged()"
         >
           <mat-tab
-            *ngFor="let variant of variants"
+            *ngFor="let variant of variants; let i = index"
             label="{{ variant.title }} -- {{ variant.duration }}"
           >
+           
             <video-combo
               [gcsFolder]="folder"
               [combo]="variant"
@@ -689,9 +690,41 @@ limitations under the License.
       </mat-expansion-panel-header>
       <mat-tab-group>
         <mat-tab
-          *ngFor="let combo of combos"
+          *ngFor="let combo of combos; let i = index"
           label="{{ combo.title }} -- {{ combo.duration }}"
         >
+          <div style="margin: 16px 0; padding: 16px; border: 1px solid #e0e0e0; border-radius: 8px;">
+            <!-- Upload section (only show if no image uploaded) -->
+            <div *ngIf="true">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                <span style="font-size: 16px; font-weight: 500;">Add End Slate Image</span>
+                <button mat-raised-button color="primary" (click)="comboImageInput.click()">
+                  <mat-icon>add_photo_alternate</mat-icon> Select Image
+                </button>
+              </div>
+              
+              <input 
+                #comboImageInput 
+                type="file" 
+                accept="image/*" 
+                style="display: none" 
+                (change)="onEndSlateImageSelect($event, i)" 
+              />
+              
+              <!-- Image Preview -->
+              <div *ngIf="selectedComboImageUrl && selectedComboIndex === i" style="text-align: center; margin-bottom: 16px;">
+                <img [src]="selectedComboImageUrl" style="max-width: 300px; max-height: 200px; border-radius: 8px;" />
+                <div style="margin-top: 8px;">
+                  <button mat-raised-button color="accent" (click)="uploadEndSlateImage(i)">
+                    <mat-icon>cloud_upload</mat-icon> Upload Image
+                  </button>
+                  <button mat-button (click)="removeEndSlateImage()">Cancel</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Video Combo Component -->
           <video-combo
             [gcsFolder]="folder"
             [combo]="combo"
