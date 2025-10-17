@@ -660,6 +660,117 @@ class Extractor:
           if os.path.exists(tmp_dir):
               shutil.rmtree(tmp_dir, ignore_errors=True)
 
+  def combine_segments(self):
+      """Combines consecutive AV segments and regenerates metadata.
+
+      Expected combine file format:
+      {"segment_ids": [[2, 3], [5, 6]]}  # List of segment groups to combine
+
+      Process:
+      - Validates all groups are consecutive
+      - Merges rows in precombine_data.json
+      - Sets av_segment_id to joined format (e.g., "2.3.4")
+      - Renumbers segments after all merges
+      - Calls finalise_av_segments() to regenerate cuts and metadata
+      """
+      logging.info('COMBINING SEGMENTS - Starting operation %s',
+                   self.media_file.full_gcs_path)
+
+      tmp_dir = tempfile.mkdtemp()
+
+      try:
+          # 1. Download input video
+          video_file_name = next(
+              iter(StorageService.filter_video_files(
+                  prefix=f'{self.media_file.gcs_root_folder}/'
+                         f'{ConfigService.INPUT_FILENAME}',
+                  bucket_name=self.gcs_bucket_name,
+                  first_only=True,
+              )),
+              None,
+          )
+
+          if not video_file_name:
+              raise ValueError('Input video file not found')
+
+          input_video_file_path = StorageService.download_gcs_file(
+              file_path=Utils.TriggerFile(video_file_name),
+              output_dir=tmp_dir,
+              bucket_name=self.gcs_bucket_name,
+          )
+
+          # 2. Download precombine_data.json (current data.json renamed by App Script)
+          av_segments_file_path = StorageService.download_gcs_file(
+              file_path=Utils.TriggerFile(
+                  str(pathlib.Path(
+                      self.media_file.gcs_root_folder,
+                      ConfigService.OUTPUT_PRECOMBINE_DATA_FILE
+                  ))
+              ),
+              output_dir=tmp_dir,
+              bucket_name=self.gcs_bucket_name,
+          )
+
+          # 3. Load data
+          av_segments = pd.read_json(
+              av_segments_file_path,
+              orient='records',
+          )
+          av_segments['av_segment_id'] = (
+              av_segments['av_segment_id'].astype(str).str.replace(r'\.0$', '', regex=True)
+          )
+
+          logging.info('COMBINING SEGMENTS - Current segments: %r',
+                       av_segments.to_json(orient='records'))
+
+          # 4. Read combine instructions
+          combine_file_contents = StorageService.download_gcs_file(
+              file_path=self.media_file,
+              bucket_name=self.gcs_bucket_name,
+              fetch_contents=True,
+          )
+
+          combine_instructions = json.loads(combine_file_contents.decode('utf-8'))
+
+          if 'segment_ids' not in combine_instructions:
+              raise ValueError('Missing required field "segment_ids" in combine file')
+
+          segment_groups = combine_instructions['segment_ids']
+
+          if not isinstance(segment_groups, list):
+              raise ValueError(f'segment_ids must be a list, got {type(segment_groups)}')
+
+          # 5. Process combines
+          av_segments = _finalise_combine(av_segments, segment_groups)
+
+          # 6. Call finalise_av_segments to regenerate everything
+          self.finalise_av_segments(
+              tmp_dir,
+              input_video_file_path,
+              video_file_name,
+              av_segments,
+          )
+
+          # 7. Cleanup
+          StorageService.delete_gcs_file(
+              file_path=Utils.TriggerFile(
+                  str(pathlib.Path(
+                      self.media_file.gcs_root_folder,
+                      ConfigService.OUTPUT_PRECOMBINE_DATA_FILE
+                  ))
+              ),
+              bucket_name=self.gcs_bucket_name,
+          )
+
+          logging.info('COMBINING SEGMENTS - Operation completed successfully!')
+
+      except Exception as e:
+          logging.error('COMBINING SEGMENTS - Error: %s', e)
+          raise
+      finally:
+          if os.path.exists(tmp_dir):
+              shutil.rmtree(tmp_dir, ignore_errors=True)
+
   def enhance_av_segments(
       self,
       video_file_path: str,
@@ -899,6 +1010,199 @@ def _finalise_split(
   return av_segments.sort_values(by='start_s').reset_index(drop=True)
 
 
+def _finalise_combine(
+        av_segments: pd.DataFrame,
+        segment_groups: Sequence[Sequence[int]],
+) -> pd.DataFrame:
+    """Combines multiple segment groups and returns the resulting DataFrame.
+
+    Args:
+        av_segments: The original AV segments.
+        segment_groups: List of segment ID groups to combine.
+                       E.g., [[2, 3], [5, 6]]
+
+    Returns:
+        The updated av_segments dataframe with combined segments having
+        dotted av_segment_id (e.g., "2.3").
+    """
+    # 1. Filter out single-segment groups
+    segment_groups = [g for g in segment_groups if len(g) > 1]
+
+    if not segment_groups:
+        logging.info('COMBINING SEGMENTS - No valid groups to combine')
+        return av_segments
+
+    # 2. Sort segments by time to determine adjacency
+    av_segments = av_segments.sort_values(by='start_s').reset_index(drop=True)
+
+    # 3. Validate groups are adjacent in the sorted order
+    id_to_position = {
+        str(seg_id): idx
+        for idx, seg_id in enumerate(av_segments['av_segment_id'].tolist())
+    }
+
+    valid_groups = []
+    for group in segment_groups:
+        group = [str(seg_id) for seg_id in group]
+
+        # Check all IDs exist
+        if not all(seg_id in id_to_position for seg_id in group):
+            logging.warning(
+                'COMBINING SEGMENTS - Skipping group %s - some IDs not found',
+                group
+            )
+            continue
+
+        # Check if positions are consecutive
+        positions = sorted([id_to_position[seg_id] for seg_id in group])
+        expected_positions = list(range(positions[0], positions[-1] + 1))
+
+        if positions != expected_positions:
+            logging.error(
+                'COMBINING SEGMENTS - Segments %s are not adjacent. '
+                'Positions: %s, Expected: %s',
+                group, positions, expected_positions
+            )
+            raise ValueError(
+                f'Segments {group} must be adjacent in time order'
+            )
+
+        valid_groups.append(group)
+
+    if not valid_groups:
+        logging.info('COMBINING SEGMENTS - No valid groups after validation')
+        return av_segments
+
+    logging.info('COMBINING SEGMENTS - Processing groups: %s', valid_groups)
+
+    # 4. Set cut=False for all segments by default
+    av_segments['cut'] = False
+
+    # 5. Process each group (merge rows)
+    rows_to_delete = []
+
+    for group in valid_groups:
+        first_id = group[0]
+        other_ids = group[1:]
+
+        # Get rows for this group
+        group_rows = av_segments[
+            av_segments['av_segment_id'].isin(group)
+        ].copy()
+
+        if group_rows.empty:
+            logging.warning(
+                'COMBINING SEGMENTS - No rows found for group %s', group
+            )
+            continue
+
+        # Create combined ID: "2.3"
+        combined_id = '.'.join(group)
+
+        # Merge into single row
+        merged_row = _merge_segment_rows(group_rows, combined_id)
+
+        # Mark rows for deletion (all except first)
+        rows_to_delete.extend(other_ids)
+
+        # Update the first row with merged values
+        first_row_idx = av_segments[av_segments['av_segment_id'] == first_id].index[0]
+        for col in merged_row.index:
+            if col in av_segments.columns:
+                av_segments.at[first_row_idx, col] = merged_row[col]
+
+        # Mark merged segment for re-cutting
+        av_segments.loc[av_segments['av_segment_id'] == combined_id, 'cut'] = True
+
+    # 6. Delete marked rows
+    av_segments = av_segments[
+        ~av_segments['av_segment_id'].isin(rows_to_delete)
+    ]
+
+    # 7. Sort by start time (keep dotted IDs)
+    av_segments = av_segments.sort_values(by='start_s').reset_index(drop=True)
+
+    # 8. Recalculate durations
+    av_segments['duration_s'] = av_segments['end_s'] - av_segments['start_s']
+
+    logging.info('COMBINING SEGMENTS - Final segments: %s',
+                 av_segments['av_segment_id'].tolist())
+
+    return av_segments
+
+
+
+def _merge_segment_rows(rows: pd.DataFrame, combined_id: str) -> pd.Series:
+    """Merges multiple segment rows into one.
+
+    Args:
+        rows: DataFrame containing rows to merge.
+        combined_id: The combined segment ID (e.g., "2.3").
+
+    Returns:
+        A Series representing the merged row.
+    """
+    merged = rows.iloc[0].copy()
+    merged['av_segment_id'] = combined_id  # Use dotted ID
+    merged['start_s'] = rows['start_s'].min()
+    merged['end_s'] = rows['end_s'].max()
+    merged['duration_s'] = merged['end_s'] - merged['start_s']
+
+    # Merge visual_segment_ids (flatten list of lists)
+    try:
+        all_visual = []
+        for vis_list in rows['visual_segment_ids'].tolist():
+            if vis_list and isinstance(vis_list, list):
+                all_visual.extend(vis_list)
+            elif vis_list:
+                all_visual.append(vis_list)
+        merged['visual_segment_ids'] = sorted(list(set(all_visual)))
+    except (KeyError, TypeError):
+        merged['visual_segment_ids'] = []
+
+    # Merge audio_segment_ids (flatten list of lists)
+    try:
+        all_audio = []
+        for aud_list in rows['audio_segment_ids'].tolist():
+            if aud_list and isinstance(aud_list, list):
+                all_audio.extend(aud_list)
+            elif aud_list:
+                all_audio.append(aud_list)
+        merged['audio_segment_ids'] = sorted(list(set(all_audio)))
+    except (KeyError, TypeError):
+        merged['audio_segment_ids'] = []
+
+    # Merge transcripts (flatten list of lists)
+    try:
+        all_transcripts = []
+        for transcript_list in rows['transcript'].tolist():
+            if transcript_list and isinstance(transcript_list, list):
+                all_transcripts.extend(transcript_list)
+            elif transcript_list:
+                all_transcripts.append(transcript_list)
+        merged['transcript'] = all_transcripts
+    except (KeyError, TypeError):
+        merged['transcript'] = []
+
+    # Merge labels, objects, logos, text (flatten list of lists)
+    for field in ['labels', 'objects', 'logos', 'text']:
+        try:
+            all_items = []
+            for item_list in rows[field].tolist():
+                if item_list and isinstance(item_list, list):
+                    all_items.extend(item_list)
+                elif item_list:
+                    all_items.append(item_list)
+            merged[field] = list(set(all_items)) if all_items else []
+        except (KeyError, TypeError):
+            merged[field] = []
+
+    # Will be set to True in _finalise_combine
+    merged['cut'] = False
+
+    return merged
+
+
 def _cut_and_annotate_av_segment(
     row: pd.Series,
     video_file_path: str,
@@ -907,19 +1211,7 @@ def _cut_and_annotate_av_segment(
     gcs_cut_path: str,
     bucket_name: str,
 ) -> Tuple[str, str]:
-  """Cuts a single A/V segment with ffmpeg and annotates it with Gemini.
-
-  Args:
-    row: The A/V segment data as a row in a DataFrame.
-    video_file_path: Path to the input video file.
-    cuts_path: The local directory to store the A/V segment cuts.
-    vision_model: The Gemini model to generate the A/V segment descriptions.
-    gcs_cut_path: The path to store the A/V segment cut in GCS.
-    bucket_name: The GCS bucket name to store the A/V segment cut.
-
-  Returns:
-    A tuple of the A/V segment description and keywords.
-  """
+  """Cuts a single A/V segment with ffmpeg and annotates it with Gemini."""
   av_segment_id = row['av_segment_id']
   _, video_ext = os.path.splitext(video_file_path)
   full_cut_path = str(pathlib.Path(cuts_path, f'{av_segment_id}{video_ext}'))
@@ -957,8 +1249,8 @@ def _cut_and_annotate_av_segment(
   gcs_cut_dest_file = gcs_cut_path.replace(f'gs://{bucket_name}/', '')
   StorageService.upload_gcs_file(
       file_path=full_cut_path,
-      bucket_name=bucket_name,
       destination_file_name=gcs_cut_dest_file,
+      bucket_name=bucket_name,
   )
   Utils.execute_subprocess_commands(
       cmds=[
@@ -979,10 +1271,10 @@ def _cut_and_annotate_av_segment(
   gcs_cut_dest_file_prefix, _ = os.path.splitext(gcs_cut_dest_file)
   StorageService.upload_gcs_file(
       file_path=full_screenshot_path,
-      bucket_name=bucket_name,
       destination_file_name=(
           f'{gcs_cut_dest_file_prefix}{ConfigService.SEGMENT_SCREENSHOT_EXT}'
       ),
+      bucket_name=bucket_name,
   )
   description = ''
   keywords = ''
@@ -1010,14 +1302,14 @@ def _cut_and_annotate_av_segment(
       logging.warning(
           'ANNOTATION - Could not annotate segment %s!', av_segment_id
       )
-  # Execution should continue regardless of the underlying exception
-  # pylint: disable=broad-exception-caught
   except Exception:
     logging.exception(
         'Encountered error during segment %s annotation! Continuing...',
         av_segment_id,
     )
   return description, keywords
+
+
 
 
 def _create_optimised_segments(
