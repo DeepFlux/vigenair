@@ -1418,27 +1418,37 @@ def _build_ffmpeg_filters(
   )
 
 
+import json
+import logging
+import os
+import pathlib
+import re
+import subprocess
+import tempfile
+import time
+from typing import Any, Dict, Sequence, Tuple
+
+
 class EndSlateProcessor:
-    """Processor for adding end slate images to rendered videos."""
+    """Processor for adding end slate images to rendered videos.
+
+    Creates a complete copy of the render folder with end slate videos.
+    All files are copied to ensure independence from original folder.
+    """
 
     def __init__(self, gcs_bucket_name: str, trigger_file: Utils.TriggerFile):
-        """Initializes the EndSlateProcessor.
-
-        Args:
-          gcs_bucket_name: The GCS bucket name.
-          trigger_file: The trigger file that initiated this process.
-        """
+        """Initializes the EndSlateProcessor."""
         self.gcs_bucket_name = gcs_bucket_name
         self.trigger_file = trigger_file
         self.tmp_dir = tempfile.mkdtemp()
         logging.info('END_SLATE - Initialized with temp dir: %s', self.tmp_dir)
 
     def process(self):
-        """Main processing function."""
+        """Main processing function - Creates complete CTA folder."""
         logging.info('END_SLATE - Starting end slate processing...')
 
         try:
-            # Step 1: Download and parse JSON config
+            # Step 1: Load config
             config = self._load_config()
 
             # Step 2: Download end slate image
@@ -1452,53 +1462,60 @@ class EndSlateProcessor:
                 image_height
             )
 
-            # Step 4: Find all combo videos in the source folder
+            # Step 4: Create CTA folder name
             render_folder = config['rendered_video_folder']
-            combo_videos = self._find_combo_videos(render_folder)
-
-            if not combo_videos:
-                logging.warning(
-                    'END_SLATE - No combo videos found in folder: %s',
-                    render_folder
-                )
-                return
-
-            logging.info(
-                'END_SLATE - Found %d combo videos to process',
-                len(combo_videos)
-            )
-
-            # Step 5: Create CTA folder name
-            import time
             timestamp = int(time.time() * 1000)
             folder_name_base = render_folder.replace('--combos', '').split('--')[0]
             cta_folder = f'CTA - {folder_name_base}--{timestamp}-combos'
 
             logging.info('END_SLATE - Creating CTA folder: %s', cta_folder)
 
-            # Step 6: Download original combos.json
-            original_combos = self._download_original_combos(render_folder)
+            # Step 5: Get ALL files from original folder
+            all_files = self._get_all_files_in_folder(render_folder)
+            logging.info(
+                'END_SLATE - Found %d total files to process',
+                len(all_files)
+            )
 
-            # Step 7: Process each video and upload to CTA folder
+            # Step 6: Categorize files
+            video_files = [f for f in all_files if self._is_combo_video(f)]
+            text_files = [f for f in all_files if self._is_text_file(f)]
+            other_files = [f for f in all_files
+                           if f not in video_files and f not in text_files]
+
+            logging.info(
+                'END_SLATE - Categorized: %d videos, %d text files, %d other files',
+                len(video_files),
+                len(text_files),
+                len(other_files)
+            )
+
+            # Step 7: Process video files (add end slate)
             duration = config['duration']
-            processed_videos = []
-
-            for video_gcs_path in combo_videos:
-                new_video_path = self._process_video(
-                    video_gcs_path=video_gcs_path,
+            for video_file in video_files:
+                self._process_video_with_endslate(
+                    video_gcs_path=video_file,
                     image_path=image_path,
                     duration=duration,
+                    original_folder=render_folder,
                     cta_folder=cta_folder
                 )
-                if new_video_path:
-                    processed_videos.append(new_video_path)
 
-            # Step 8: Create and upload CTA combos.json
-            self._create_cta_combos_json(
-                original_combos=original_combos,
-                cta_folder=cta_folder,
-                duration=duration
-            )
+            # Step 8: Copy and update text files
+            for text_file in text_files:
+                self._copy_and_update_text_file(
+                    text_file_gcs_path=text_file,
+                    original_folder=render_folder,
+                    cta_folder=cta_folder
+                )
+
+            # Step 9: Copy all other files as-is
+            for other_file in other_files:
+                self._copy_file_as_is(
+                    file_gcs_path=other_file,
+                    original_folder=render_folder,
+                    cta_folder=cta_folder
+                )
 
             logging.info('END_SLATE - Processing completed successfully!')
             logging.info('END_SLATE - CTA folder created: %s', cta_folder)
@@ -1573,6 +1590,56 @@ class EndSlateProcessor:
         logging.info('END_SLATE - Image downloaded to: %s', local_path)
         return local_path
 
+    def _get_all_files_in_folder(self, render_folder: str):
+        """Gets ALL files in the render folder (recursive)."""
+        full_folder_path = str(
+            pathlib.Path(
+                self.trigger_file.gcs_root_folder,
+                render_folder
+            )
+        )
+
+        # Ensure trailing slash for prefix matching
+        if not full_folder_path.endswith('/'):
+            full_folder_path += '/'
+
+        logging.info('END_SLATE - Scanning folder: %s', full_folder_path)
+
+        # Use Google Cloud Storage directly (most reliable)
+        from google.cloud import storage
+
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(self.gcs_bucket_name)
+
+        # List all files with this prefix
+        blobs = bucket.list_blobs(prefix=full_folder_path)
+
+        # Convert to list of paths, excluding folder markers
+        all_files = [blob.name for blob in blobs if not blob.name.endswith('/')]
+
+        logging.info('END_SLATE - Found %d files', len(all_files))
+
+        return all_files
+
+    def _is_combo_video(self, file_path: str) -> bool:
+        """Checks if file is a combo video that needs end slate."""
+        pattern = r'combo_\d+_[hsv]\.mp4$'
+        return bool(re.search(pattern, file_path))
+
+    def _is_text_file(self, file_path: str) -> bool:
+        """Checks if file is a text file that might contain URLs."""
+        text_extensions = ['.json', '.txt', '.yaml', '.yml', '.xml', '.html']
+        return any(file_path.lower().endswith(ext) for ext in text_extensions)
+
+    def _get_relative_path(self, file_gcs_path: str, folder_name: str) -> str:
+        """Gets the relative path of a file within its folder."""
+        # Extract path after folder name
+        parts = file_gcs_path.split(folder_name)
+        if len(parts) > 1:
+            relative = parts[1].lstrip('/')
+            return relative
+        return os.path.basename(file_gcs_path)
+
     def _get_image_dimensions(self, image_path: str) -> Tuple[int, int]:
         """Gets image dimensions using ffprobe."""
         cmd = [
@@ -1641,70 +1708,17 @@ class EndSlateProcessor:
             'codec': video_stream['codec_name']
         }
 
-    def _find_combo_videos(self, render_folder: str) -> Sequence[str]:
-        """Finds all combo_*.mp4 videos in the render folder."""
-        full_folder_path = str(
-            pathlib.Path(
-                self.trigger_file.gcs_root_folder,
-                render_folder
-            )
-        )
-
-        logging.info(
-            'END_SLATE - Searching for combo videos in: %s',
-            full_folder_path
-        )
-
-        pattern = r'combo_\d+_[hsv]\.mp4$'
-
-        combo_videos = StorageService.filter_files(
-            bucket_name=self.gcs_bucket_name,
-            prefix=full_folder_path,
-            suffix='.mp4'
-        )
-
-        combo_videos = [
-            video for video in combo_videos
-            if re.search(pattern, video)
-        ]
-
-        return combo_videos
-
-    def _download_original_combos(self, render_folder: str) -> Dict[str, Any]:
-        """Downloads the original combos.json."""
-        combos_json_path = str(
-            pathlib.Path(
-                self.trigger_file.gcs_root_folder,
-                render_folder,
-                'combos.json'
-            )
-        )
-
-        logging.info('END_SLATE - Downloading original combos.json: %s', combos_json_path)
-
-        combos_trigger = Utils.TriggerFile(combos_json_path)
-        combos_content = StorageService.download_gcs_file(
-            file_path=combos_trigger,
-            bucket_name=self.gcs_bucket_name,
-            fetch_contents=True
-        )
-
-        if not combos_content:
-            logging.warning('END_SLATE - combos.json not found, using minimal structure')
-            return {}
-
-        return json.loads(combos_content)
-
-    def _process_video(
+    def _process_video_with_endslate(
             self,
             video_gcs_path: str,
             image_path: str,
             duration: int,
+            original_folder: str,
             cta_folder: str
-    ) -> str:
-        """Processes a single video by adding the end slate."""
-        video_filename = os.path.basename(video_gcs_path)
-        logging.info('END_SLATE - Processing video: %s', video_filename)
+    ):
+        """Processes a video file by adding end slate."""
+        relative_path = self._get_relative_path(video_gcs_path, original_folder)
+        logging.info('END_SLATE - Processing video: %s', relative_path)
 
         # Download video
         video_trigger = Utils.TriggerFile(video_gcs_path)
@@ -1719,7 +1733,7 @@ class EndSlateProcessor:
                 'END_SLATE - Failed to download video: %s',
                 video_gcs_path
             )
-            return None
+            return
 
         # Get video info
         video_info = self._get_video_info(local_video_path)
@@ -1731,9 +1745,10 @@ class EndSlateProcessor:
         )
 
         # Create output path
-        output_path = str(pathlib.Path(self.tmp_dir, f'cta_{video_filename}'))
+        output_filename = f'endslate_{os.path.basename(local_video_path)}'
+        output_path = str(pathlib.Path(self.tmp_dir, output_filename))
 
-        # Build FFmpeg command
+        # Add end slate using FFmpeg
         self._add_end_slate_ffmpeg(
             input_video=local_video_path,
             image_path=image_path,
@@ -1744,15 +1759,15 @@ class EndSlateProcessor:
             fps=video_info['fps']
         )
 
-        # Upload to CTA folder (keep original filename without cta_ prefix)
+        # Upload to CTA folder with same relative path
         new_video_gcs_path = str(pathlib.Path(
             self.trigger_file.gcs_root_folder,
             cta_folder,
-            video_filename
+            relative_path
         ))
 
         logging.info(
-            'END_SLATE - Uploading to CTA folder: %s',
+            'END_SLATE - Uploading processed video to: %s',
             new_video_gcs_path
         )
 
@@ -1763,8 +1778,7 @@ class EndSlateProcessor:
             overwrite=False
         )
 
-        logging.info('END_SLATE - Successfully processed: %s', video_filename)
-        return new_video_gcs_path
+        logging.info('END_SLATE - Successfully processed: %s', relative_path)
 
     def _add_end_slate_ffmpeg(
             self,
@@ -1820,78 +1834,166 @@ class EndSlateProcessor:
 
         logging.info('END_SLATE - FFmpeg completed successfully')
 
-    def _create_cta_combos_json(
+    def _copy_and_update_text_file(
             self,
-            original_combos: Dict[str, Any],
-            cta_folder: str,
-            duration: int
+            text_file_gcs_path: str,
+            original_folder: str,
+            cta_folder: str
     ):
-        """Creates combos.json for the CTA folder."""
-        logging.info('END_SLATE - Creating CTA combos.json')
+        """Copies a text file and updates folder references."""
+        relative_path = self._get_relative_path(text_file_gcs_path, original_folder)
+        logging.info('END_SLATE - Processing text file: %s', relative_path)
 
-        # Copy original structure if it exists
-        if original_combos:
-            cta_combos = json.loads(json.dumps(original_combos))  # Deep copy
+        # Download text file
+        text_trigger = Utils.TriggerFile(text_file_gcs_path)
+        content = StorageService.download_gcs_file(
+            file_path=text_trigger,
+            bucket_name=self.gcs_bucket_name,
+            fetch_contents=True
+        )
+
+        if not content:
+            logging.error(
+                'END_SLATE - Failed to download text file: %s',
+                text_file_gcs_path
+            )
+            return
+
+        # ✅ FIX: Convert bytes to string if needed
+        if isinstance(content, bytes):
+            try:
+                content = content.decode('utf-8')
+            except UnicodeDecodeError:
+                # Try with latin-1 as fallback
+                content = content.decode('latin-1')
+
+        # Update content: replace all references to original folder
+        updated_content = self._update_folder_references(
+            content=content,
+            original_folder=original_folder,
+            cta_folder=cta_folder
+        )
+
+        # Special handling for combos.json
+        if text_file_gcs_path.endswith('combos.json'):
+            updated_content = self._update_combos_json(
+                content=updated_content,
+                cta_folder=cta_folder
+            )
+
+        # Save locally
+        local_path = str(pathlib.Path(self.tmp_dir, f'updated_{relative_path.replace("/", "_")}'))
+        with open(local_path, 'w', encoding='utf-8') as f:
+            f.write(updated_content)
+
+        # Upload to CTA folder with same relative path
+        new_text_gcs_path = str(pathlib.Path(
+            self.trigger_file.gcs_root_folder,
+            cta_folder,
+            relative_path
+        ))
+
+        logging.info(
+            'END_SLATE - Uploading updated text file to: %s',
+            new_text_gcs_path
+        )
+
+        StorageService.upload_gcs_file(
+            file_path=local_path,
+            destination_file_name=new_text_gcs_path,
+            bucket_name=self.gcs_bucket_name,
+            overwrite=True
+        )
+
+        logging.info('END_SLATE - Successfully updated text file: %s', relative_path)
+
+    def _update_folder_references(
+            self,
+            content: str,
+            original_folder: str,
+            cta_folder: str
+    ) -> str:
+        """Updates all references to original folder with CTA folder."""
+        # URL-encoded version
+        import urllib.parse
+        original_encoded = urllib.parse.quote(original_folder, safe='')
+        cta_encoded = urllib.parse.quote(cta_folder, safe='')
+
+        # Replace both plain and encoded versions
+        updated = content.replace(original_folder, cta_folder)
+        updated = updated.replace(original_encoded, cta_encoded)
+
+        return updated
+
+    def _update_combos_json(self, content: str, cta_folder: str) -> str:
+        """Special updates for combos.json."""
+        try:
+            data = json.loads(content)
 
             # Update each variant
-            for key, variant in cta_combos.items():
+            for key, variant in data.items():
                 if not key.startswith('_'):
                     continue
 
                 # Update title
                 if 'title' in variant:
-                    variant['title'] = variant['title'] + ' - WITH END SLATE'
+                    if 'WITH END SLATE' not in variant['title']:
+                        variant['title'] = variant['title'] + ' - WITH END SLATE'
 
                 # Update description
                 if 'description' in variant:
-                    variant['description'] = variant['description'] + ' एंड स्लेट के साथ।'
+                    if 'एंड स्लेट के साथ' not in variant['description']:
+                        variant['description'] = variant['description'] + ' एंड स्लेट के साथ।'
 
-                # Update duration if exists
-                if 'duration' in variant:
-                    variant['duration'] = variant['duration'] + duration
+            return json.dumps(data, indent=2, ensure_ascii=False)
 
-                # Update video URLs in variants
-                if 'variants' in variant:
-                    for format_key, url in variant['variants'].items():
-                        # Replace folder name in URL
-                        original_folder = url.split('/')[-2]
-                        new_url = url.replace(original_folder, cta_folder)
-                        variant['variants'][format_key] = new_url
-                        logging.info('END_SLATE - Updated URL for %s: %s', format_key, new_url)
-        else:
-            # Create minimal structure
-            cta_combos = {
-                '_0': {
-                    'variant_id': 0,
-                    'title': 'CTA Video with End Slate',
-                    'description': 'Video with end slate added',
-                    'render_settings': {
-                        'formats': ['horizontal']
-                    },
-                    'variants': {},
-                    'texts': [],
-                    'images': {'horizontal': []}
-                }
-            }
+        except json.JSONDecodeError:
+            logging.warning('END_SLATE - Failed to parse combos.json, returning as-is')
+            return content
 
-        # Save locally
-        local_combos_path = str(pathlib.Path(self.tmp_dir, 'combos_cta.json'))
-        with open(local_combos_path, 'w', encoding='utf-8') as f:
-            json.dump(cta_combos, f, indent=2, ensure_ascii=False)
+    def _copy_file_as_is(
+            self,
+            file_gcs_path: str,
+            original_folder: str,
+            cta_folder: str
+    ):
+        """Copies a file as-is without modifications."""
+        relative_path = self._get_relative_path(file_gcs_path, original_folder)
+        logging.info('END_SLATE - Copying file: %s', relative_path)
 
-        # Upload to GCS
-        cta_combos_gcs_path = str(pathlib.Path(
+        # Download file
+        file_trigger = Utils.TriggerFile(file_gcs_path)
+        local_path = StorageService.download_gcs_file(
+            file_path=file_trigger,
+            bucket_name=self.gcs_bucket_name,
+            output_dir=self.tmp_dir
+        )
+
+        if not local_path:
+            logging.error(
+                'END_SLATE - Failed to download file: %s',
+                file_gcs_path
+            )
+            return
+
+        # Upload to CTA folder with same relative path
+        new_file_gcs_path = str(pathlib.Path(
             self.trigger_file.gcs_root_folder,
             cta_folder,
-            'combos.json'
+            relative_path
         ))
 
+        logging.info(
+            'END_SLATE - Uploading copied file to: %s',
+            new_file_gcs_path
+        )
+
         StorageService.upload_gcs_file(
-            file_path=local_combos_path,
-            destination_file_name=cta_combos_gcs_path,
+            file_path=local_path,
+            destination_file_name=new_file_gcs_path,
             bucket_name=self.gcs_bucket_name,
             overwrite=True
         )
 
-        logging.info('END_SLATE - CTA combos.json uploaded successfully')
+        logging.info('END_SLATE - Successfully copied: %s', relative_path)
 
