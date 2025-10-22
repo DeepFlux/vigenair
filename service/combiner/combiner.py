@@ -26,6 +26,7 @@ import os
 import pathlib
 import re
 import sys
+import subprocess
 import tempfile
 from typing import Any, Dict, Optional, Sequence, Tuple, Union
 from urllib import parse
@@ -1415,3 +1416,584 @@ def _build_ffmpeg_filters(
       music_overlay_select_filter,
       continuous_audio_select_filter,
   )
+
+
+import json
+import logging
+import os
+import pathlib
+import re
+import subprocess
+import tempfile
+import time
+from typing import Any, Dict, Sequence, Tuple
+
+
+class EndSlateProcessor:
+    """Processor for adding end slate images to rendered videos.
+
+    Creates a complete copy of the render folder with end slate videos.
+    All files are copied to ensure independence from original folder.
+    """
+
+    def __init__(self, gcs_bucket_name: str, trigger_file: Utils.TriggerFile):
+        """Initializes the EndSlateProcessor."""
+        self.gcs_bucket_name = gcs_bucket_name
+        self.trigger_file = trigger_file
+        self.tmp_dir = tempfile.mkdtemp()
+        logging.info('END_SLATE - Initialized with temp dir: %s', self.tmp_dir)
+
+    def process(self):
+        """Main processing function - Creates complete CTA folder."""
+        logging.info('END_SLATE - Starting end slate processing...')
+
+        try:
+            # Step 1: Load config
+            config = self._load_config()
+
+            # Step 2: Download end slate image
+            image_path = self._download_image(config['image'])
+
+            # Step 3: Get image dimensions
+            image_width, image_height = self._get_image_dimensions(image_path)
+            logging.info(
+                'END_SLATE - Image dimensions: %dx%d',
+                image_width,
+                image_height
+            )
+
+            # Step 4: Create CTA folder name
+            render_folder = config['rendered_video_folder']
+            timestamp = int(time.time() * 1000)
+            folder_name_base = render_folder.replace('--combos', '').split('--')[0]
+            cta_folder = f'CTA - {folder_name_base}--{timestamp}-combos'
+
+            logging.info('END_SLATE - Creating CTA folder: %s', cta_folder)
+
+            # Step 5: Get ALL files from original folder
+            all_files = self._get_all_files_in_folder(render_folder)
+            logging.info(
+                'END_SLATE - Found %d total files to process',
+                len(all_files)
+            )
+
+            # Step 6: Categorize files
+            video_files = [f for f in all_files if self._is_combo_video(f)]
+            text_files = [f for f in all_files if self._is_text_file(f)]
+            other_files = [f for f in all_files
+                           if f not in video_files and f not in text_files]
+
+            logging.info(
+                'END_SLATE - Categorized: %d videos, %d text files, %d other files',
+                len(video_files),
+                len(text_files),
+                len(other_files)
+            )
+
+            # Step 7: Process video files (add end slate)
+            duration = config['duration']
+            for video_file in video_files:
+                self._process_video_with_endslate(
+                    video_gcs_path=video_file,
+                    image_path=image_path,
+                    duration=duration,
+                    original_folder=render_folder,
+                    cta_folder=cta_folder
+                )
+
+            # Step 8: Copy and update text files
+            for text_file in text_files:
+                self._copy_and_update_text_file(
+                    text_file_gcs_path=text_file,
+                    original_folder=render_folder,
+                    cta_folder=cta_folder
+                )
+
+            # Step 9: Copy all other files as-is
+            for other_file in other_files:
+                self._copy_file_as_is(
+                    file_gcs_path=other_file,
+                    original_folder=render_folder,
+                    cta_folder=cta_folder
+                )
+
+            logging.info('END_SLATE - Processing completed successfully!')
+            logging.info('END_SLATE - CTA folder created: %s', cta_folder)
+
+        except Exception as e:
+            logging.exception('END_SLATE - Error during processing: %s', str(e))
+            raise
+
+    def _load_config(self) -> Dict[str, Any]:
+        """Loads and parses the end slate configuration JSON."""
+        from urllib import parse
+
+        logging.info(
+            'END_SLATE - Loading config from: %s',
+            self.trigger_file.full_gcs_path
+        )
+
+        json_content = StorageService.download_gcs_file(
+            file_path=self.trigger_file,
+            bucket_name=self.gcs_bucket_name,
+            fetch_contents=True
+        )
+
+        if not json_content:
+            raise ValueError('Failed to download end slate config JSON')
+
+        config = json.loads(json_content)
+
+        # Validate required fields
+        required_fields = ['image', 'duration', 'rendered_video_folder']
+        for field in required_fields:
+            if field not in config:
+                raise ValueError(f'Missing required field in config: {field}')
+
+        # URL decode folder name
+        config['rendered_video_folder'] = parse.unquote(
+            config['rendered_video_folder']
+        )
+
+        # Convert duration to int
+        config['duration'] = int(config['duration'])
+
+        logging.info('END_SLATE - Config loaded: %s', config)
+        return config
+
+    def _download_image(self, image_filename: str) -> str:
+        """Downloads the end slate image from GCS."""
+        image_gcs_path = str(
+            pathlib.Path(self.trigger_file.gcs_root_folder, image_filename)
+        )
+
+        logging.info(
+            'END_SLATE - Downloading image from: gs://%s/%s',
+            self.gcs_bucket_name,
+            image_gcs_path
+        )
+
+        image_trigger = Utils.TriggerFile(image_gcs_path)
+
+        local_path = StorageService.download_gcs_file(
+            file_path=image_trigger,
+            bucket_name=self.gcs_bucket_name,
+            output_dir=self.tmp_dir
+        )
+
+        if not local_path:
+            raise ValueError(
+                f'Failed to download image from: '
+                f'gs://{self.gcs_bucket_name}/{image_gcs_path}'
+            )
+
+        logging.info('END_SLATE - Image downloaded to: %s', local_path)
+        return local_path
+
+    def _get_all_files_in_folder(self, render_folder: str):
+        """Gets ALL files in the render folder (recursive)."""
+        full_folder_path = str(
+            pathlib.Path(
+                self.trigger_file.gcs_root_folder,
+                render_folder
+            )
+        )
+
+        # Ensure trailing slash for prefix matching
+        if not full_folder_path.endswith('/'):
+            full_folder_path += '/'
+
+        logging.info('END_SLATE - Scanning folder: %s', full_folder_path)
+
+        # Use Google Cloud Storage directly (most reliable)
+        from google.cloud import storage
+
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(self.gcs_bucket_name)
+
+        # List all files with this prefix
+        blobs = bucket.list_blobs(prefix=full_folder_path)
+
+        # Convert to list of paths, excluding folder markers
+        all_files = [blob.name for blob in blobs if not blob.name.endswith('/')]
+
+        logging.info('END_SLATE - Found %d files', len(all_files))
+
+        return all_files
+
+    def _is_combo_video(self, file_path: str) -> bool:
+        """Checks if file is a combo video that needs end slate."""
+        pattern = r'combo_\d+_[hsv]\.mp4$'
+        return bool(re.search(pattern, file_path))
+
+    def _is_text_file(self, file_path: str) -> bool:
+        """Checks if file is a text file that might contain URLs."""
+        text_extensions = ['.json', '.txt', '.yaml', '.yml', '.xml', '.html']
+        return any(file_path.lower().endswith(ext) for ext in text_extensions)
+
+    def _get_relative_path(self, file_gcs_path: str, folder_name: str) -> str:
+        """Gets the relative path of a file within its folder."""
+        # Extract path after folder name
+        parts = file_gcs_path.split(folder_name)
+        if len(parts) > 1:
+            relative = parts[1].lstrip('/')
+            return relative
+        return os.path.basename(file_gcs_path)
+
+    def _get_image_dimensions(self, image_path: str) -> Tuple[int, int]:
+        """Gets image dimensions using ffprobe."""
+        cmd = [
+            'ffprobe',
+            '-v', 'quiet',
+            '-print_format', 'json',
+            '-show_streams',
+            image_path
+        ]
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+
+        data = json.loads(result.stdout)
+
+        video_stream = next(
+            (s for s in data['streams'] if s['codec_type'] == 'video'),
+            None
+        )
+
+        if not video_stream:
+            raise ValueError(f'Could not detect dimensions for image: {image_path}')
+
+        width = int(video_stream['width'])
+        height = int(video_stream['height'])
+
+        return width, height
+
+    def _get_video_info(self, video_path: str) -> Dict[str, Any]:
+        """Gets video metadata using ffprobe."""
+        cmd = [
+            'ffprobe',
+            '-v', 'quiet',
+            '-print_format', 'json',
+            '-show_streams',
+            '-select_streams', 'v:0',
+            video_path
+        ]
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+
+        data = json.loads(result.stdout)
+        video_stream = data['streams'][0]
+
+        # Parse frame rate
+        fps_str = video_stream.get('r_frame_rate', '30/1')
+        if '/' in fps_str:
+            num, denom = map(int, fps_str.split('/'))
+            fps = num / denom
+        else:
+            fps = float(fps_str)
+
+        return {
+            'width': int(video_stream['width']),
+            'height': int(video_stream['height']),
+            'fps': fps,
+            'codec': video_stream['codec_name']
+        }
+
+    def _process_video_with_endslate(
+            self,
+            video_gcs_path: str,
+            image_path: str,
+            duration: int,
+            original_folder: str,
+            cta_folder: str
+    ):
+        """Processes a video file by adding end slate."""
+        relative_path = self._get_relative_path(video_gcs_path, original_folder)
+        logging.info('END_SLATE - Processing video: %s', relative_path)
+
+        # Download video
+        video_trigger = Utils.TriggerFile(video_gcs_path)
+        local_video_path = StorageService.download_gcs_file(
+            file_path=video_trigger,
+            bucket_name=self.gcs_bucket_name,
+            output_dir=self.tmp_dir
+        )
+
+        if not local_video_path:
+            logging.error(
+                'END_SLATE - Failed to download video: %s',
+                video_gcs_path
+            )
+            return
+
+        # Get video info
+        video_info = self._get_video_info(local_video_path)
+        logging.info(
+            'END_SLATE - Video info: %dx%d @ %.2f fps',
+            video_info['width'],
+            video_info['height'],
+            video_info['fps']
+        )
+
+        # Create output path
+        output_filename = f'endslate_{os.path.basename(local_video_path)}'
+        output_path = str(pathlib.Path(self.tmp_dir, output_filename))
+
+        # Add end slate using FFmpeg
+        self._add_end_slate_ffmpeg(
+            input_video=local_video_path,
+            image_path=image_path,
+            output_path=output_path,
+            duration=duration,
+            video_width=video_info['width'],
+            video_height=video_info['height'],
+            fps=video_info['fps']
+        )
+
+        # Upload to CTA folder with same relative path
+        new_video_gcs_path = str(pathlib.Path(
+            self.trigger_file.gcs_root_folder,
+            cta_folder,
+            relative_path
+        ))
+
+        logging.info(
+            'END_SLATE - Uploading processed video to: %s',
+            new_video_gcs_path
+        )
+
+        StorageService.upload_gcs_file(
+            file_path=output_path,
+            destination_file_name=new_video_gcs_path,
+            bucket_name=self.gcs_bucket_name,
+            overwrite=False
+        )
+
+        logging.info('END_SLATE - Successfully processed: %s', relative_path)
+
+    def _add_end_slate_ffmpeg(
+            self,
+            input_video: str,
+            image_path: str,
+            output_path: str,
+            duration: int,
+            video_width: int,
+            video_height: int,
+            fps: float
+    ):
+        """Adds end slate to video using FFmpeg."""
+        # Fix SAR mismatch by explicitly setting SAR to 1:1
+        filter_complex = (
+            f'[1:v]scale={video_width}:{video_height}:'
+            f'force_original_aspect_ratio=decrease,'
+            f'pad={video_width}:{video_height}:(ow-iw)/2:(oh-ih)/2:color=black,'
+            f'setsar=1:1[img];'
+            f'[0:v]setsar=1:1[v];'
+            f'[v][img]concat=n=2:v=1:a=0[outv]'
+        )
+
+        cmd = [
+            'ffmpeg',
+            '-y',
+            '-i', input_video,
+            '-loop', '1',
+            '-framerate', str(fps),
+            '-t', str(duration),
+            '-i', image_path,
+            '-filter_complex', filter_complex,
+            '-map', '[outv]',
+            '-map', '0:a?',
+            '-c:v', 'libx264',
+            '-preset', 'fast',
+            '-crf', '23',
+            '-c:a', 'copy',
+            '-movflags', '+faststart',
+            output_path
+        ]
+
+        logging.info('END_SLATE - Running FFmpeg command: %s', ' '.join(cmd))
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True
+        )
+
+        if result.returncode != 0:
+            logging.error('END_SLATE - FFmpeg error: %s', result.stderr)
+            raise RuntimeError(f'FFmpeg failed with error: {result.stderr}')
+
+        logging.info('END_SLATE - FFmpeg completed successfully')
+
+    def _copy_and_update_text_file(
+            self,
+            text_file_gcs_path: str,
+            original_folder: str,
+            cta_folder: str
+    ):
+        """Copies a text file and updates folder references."""
+        relative_path = self._get_relative_path(text_file_gcs_path, original_folder)
+        logging.info('END_SLATE - Processing text file: %s', relative_path)
+
+        # Download text file
+        text_trigger = Utils.TriggerFile(text_file_gcs_path)
+        content = StorageService.download_gcs_file(
+            file_path=text_trigger,
+            bucket_name=self.gcs_bucket_name,
+            fetch_contents=True
+        )
+
+        if not content:
+            logging.error(
+                'END_SLATE - Failed to download text file: %s',
+                text_file_gcs_path
+            )
+            return
+
+        # ✅ FIX: Convert bytes to string if needed
+        if isinstance(content, bytes):
+            try:
+                content = content.decode('utf-8')
+            except UnicodeDecodeError:
+                # Try with latin-1 as fallback
+                content = content.decode('latin-1')
+
+        # Update content: replace all references to original folder
+        updated_content = self._update_folder_references(
+            content=content,
+            original_folder=original_folder,
+            cta_folder=cta_folder
+        )
+
+        # Special handling for combos.json
+        if text_file_gcs_path.endswith('combos.json'):
+            updated_content = self._update_combos_json(
+                content=updated_content,
+                cta_folder=cta_folder
+            )
+
+        # Save locally
+        local_path = str(pathlib.Path(self.tmp_dir, f'updated_{relative_path.replace("/", "_")}'))
+        with open(local_path, 'w', encoding='utf-8') as f:
+            f.write(updated_content)
+
+        # Upload to CTA folder with same relative path
+        new_text_gcs_path = str(pathlib.Path(
+            self.trigger_file.gcs_root_folder,
+            cta_folder,
+            relative_path
+        ))
+
+        logging.info(
+            'END_SLATE - Uploading updated text file to: %s',
+            new_text_gcs_path
+        )
+
+        StorageService.upload_gcs_file(
+            file_path=local_path,
+            destination_file_name=new_text_gcs_path,
+            bucket_name=self.gcs_bucket_name,
+            overwrite=True
+        )
+
+        logging.info('END_SLATE - Successfully updated text file: %s', relative_path)
+
+    def _update_folder_references(
+            self,
+            content: str,
+            original_folder: str,
+            cta_folder: str
+    ) -> str:
+        """Updates all references to original folder with CTA folder."""
+        # URL-encoded version
+        import urllib.parse
+        original_encoded = urllib.parse.quote(original_folder, safe='')
+        cta_encoded = urllib.parse.quote(cta_folder, safe='')
+
+        # Replace both plain and encoded versions
+        updated = content.replace(original_folder, cta_folder)
+        updated = updated.replace(original_encoded, cta_encoded)
+
+        return updated
+
+    def _update_combos_json(self, content: str, cta_folder: str) -> str:
+        """Special updates for combos.json."""
+        try:
+            data = json.loads(content)
+
+            # Update each variant
+            for key, variant in data.items():
+                if not key.startswith('_'):
+                    continue
+
+                # Update title
+                if 'title' in variant:
+                    if 'WITH END SLATE' not in variant['title']:
+                        variant['title'] = variant['title'] + ' - WITH END SLATE'
+
+                # Update description
+                if 'description' in variant:
+                    if 'एंड स्लेट के साथ' not in variant['description']:
+                        variant['description'] = variant['description'] + ' एंड स्लेट के साथ।'
+
+            return json.dumps(data, indent=2, ensure_ascii=False)
+
+        except json.JSONDecodeError:
+            logging.warning('END_SLATE - Failed to parse combos.json, returning as-is')
+            return content
+
+    def _copy_file_as_is(
+            self,
+            file_gcs_path: str,
+            original_folder: str,
+            cta_folder: str
+    ):
+        """Copies a file as-is without modifications."""
+        relative_path = self._get_relative_path(file_gcs_path, original_folder)
+        logging.info('END_SLATE - Copying file: %s', relative_path)
+
+        # Download file
+        file_trigger = Utils.TriggerFile(file_gcs_path)
+        local_path = StorageService.download_gcs_file(
+            file_path=file_trigger,
+            bucket_name=self.gcs_bucket_name,
+            output_dir=self.tmp_dir
+        )
+
+        if not local_path:
+            logging.error(
+                'END_SLATE - Failed to download file: %s',
+                file_gcs_path
+            )
+            return
+
+        # Upload to CTA folder with same relative path
+        new_file_gcs_path = str(pathlib.Path(
+            self.trigger_file.gcs_root_folder,
+            cta_folder,
+            relative_path
+        ))
+
+        logging.info(
+            'END_SLATE - Uploading copied file to: %s',
+            new_file_gcs_path
+        )
+
+        StorageService.upload_gcs_file(
+            file_path=local_path,
+            destination_file_name=new_file_gcs_path,
+            bucket_name=self.gcs_bucket_name,
+            overwrite=True
+        )
+
+        logging.info('END_SLATE - Successfully copied: %s', relative_path)
+
